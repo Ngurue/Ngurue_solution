@@ -141,8 +141,11 @@ const formatTimeAgo = (dateString) => {
                     <div class="bg-white p-5 rounded-xl shadow-sm border-l-4 border-indigo-600 border-t border-r border-b border-slate-200 flex items-center gap-4">
                         <div class="bg-indigo-50 text-indigo-600 p-3 rounded-full text-lg shrink-0">🐖</div>
                         <div>
-                            <p class="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Jumla Shambani</p>
+                            <p class="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Jumla Shambani (Hai)</p>
                             <h3 class="text-2xl font-black text-slate-800 leading-tight">{{ props.stats?.total_pigs || 0 }}</h3>
+                            <p v-if="props.stats?.deceased" class="text-[10px] text-red-500 font-semibold mt-0.5">
+                                {{ props.stats.deceased }} waliofariki
+                            </p>
                         </div>
                     </div>
                     

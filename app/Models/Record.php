@@ -2,24 +2,24 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
-use App\Models\User;
 
 class Record extends Model
 {
     protected $fillable = [
         'record_type', 'title', 'pig_code', 'breed', 'gender', 'castration_status',
-        'description', 'birth_date', 'weaning_date', 'value', 'litter_size',
-        'status', 'pen_number', 'sire_code', 'dam_code', 'weight_history', 'user_id'
+        'description', 'birth_date', 'age_manual', 'weaning_date', 'value', 'litter_size',
+        'status', 'pen_number', 'sire_code', 'dam_code', 'weight_history', 'user_id',
     ];
 
     /**
      * Seti ya ubadilishaji wa data (Casts)
-             */
+     */
     protected $casts = [
         'weight_history' => 'array', // Inageuza JSON kwenda Array na kinyume chake kiotomatiki
-        'birth_date'     => 'date',
-        'weaning_date'   => 'date',
+        'birth_date' => 'date',
+        'weaning_date' => 'date',
     ];
 
     /**
@@ -28,6 +28,19 @@ class Record extends Model
     public function user()
     {
         return $this->belongsTo(User::class);
+    }
+
+    /**
+     * Scope: Rudisha rekodi ambazo mtumiaji anaruhusiwa kuona.
+     * Admin anaona zote; mtumiaji wa kawaida anaona zake mwenyewe tu.
+     */
+    public function scopeVisibleTo(Builder $query, User $user): Builder
+    {
+        if ($user->is_admin) {
+            return $query;
+        }
+
+        return $query->where('user_id', $user->id);
     }
 
     /**

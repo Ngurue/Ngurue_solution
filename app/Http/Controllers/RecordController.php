@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\RecordRequest;
 use App\Models\Record;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -12,100 +13,79 @@ class RecordController extends Controller
     public function index()
     {
         $user = Auth::user();
-        
-        // 1. Base Query kulingana na Role ya mtumiaji
-        $baseQuery = $user->is_admin 
-            ? Record::query() 
-            : Record::where('user_id', $user->id);
 
-        // 2. REKEBISHO KUBWA: Hesabu takwimu (Stats) ikijumuisha na Litter!
-        $statsPigQuery = (clone $baseQuery)->where('record_type', 'pig');
-        
+        // Base query kulingana na ruhusa (admin = zote, mtumiaji = zake)
+        $baseQuery = fn () => Record::query()->visibleTo($user);
+
+        $statsPigQuery = fn () => $baseQuery()->where('record_type', 'pig');
+
+        // Takwimu kuu — hazihesabu waliokufa kwenye jumla ya nguruwe hai
         $stats = [
-            'total_pigs' => (clone $baseQuery)->whereIn('record_type', ['pig', 'litter'])->count(),
-            'boars'      => (clone $statsPigQuery)->where('gender', 'Dume')->count(),
-            'sows'       => (clone $statsPigQuery)->where('gender', 'Jike')->count(),
-            
-            // TIBA YA SUMMARY: Hapa sasa inahesabu nguruwe wenye status 'Mtoto' PAMOJA na rekodi zote za aina ya 'litter'
-            'weaners'    => (clone $baseQuery)->where(function($query) {
-                                $query->where('status', 'Mtoto')
-                                      ->orWhere('record_type', 'litter');
-                            })->count(),
+            'total_pigs' => $baseQuery()
+                ->whereIn('record_type', ['pig', 'litter'])
+                ->where('status', '!=', 'Aliekufa')
+                ->count(),
+            'boars' => $statsPigQuery()->where('gender', 'Dume')->where('status', '!=', 'Aliekufa')->count(),
+            'sows' => $statsPigQuery()->where('gender', 'Jike')->where('status', '!=', 'Aliekufa')->count(),
+            'weaners' => $baseQuery()
+                ->where('status', '!=', 'Aliekufa')
+                ->where(function ($query) {
+                    $query->where('status', 'Mtoto')->orWhere('record_type', 'litter');
+                })
+                ->count(),
+            'deceased' => $baseQuery()->where('status', 'Aliekufa')->count(),
         ];
 
-        // 3. Dropdowns kwa ajili ya Fomu ya Watoto
-        $dropdownSires = (clone $baseQuery)
+        // Dropdowns kwa ajili ya kuchagua wazazi kwenye fomu ya watoto
+        $dropdownSires = $baseQuery()
             ->where('record_type', 'pig')
             ->where('gender', 'Dume')
             ->select('id', 'pig_code', 'title', 'breed')
             ->get();
 
-        $dropdownDams = (clone $baseQuery)
+        $dropdownDams = $baseQuery()
             ->where('record_type', 'pig')
             ->where('gender', 'Jike')
             ->select('id', 'pig_code', 'title', 'breed')
             ->get();
 
-        // 4. Paginated Records zinazoenda kwenye List kuu ya Dashboard
-        $paginatedRecords = $baseQuery->with(['father', 'mother'])
+        $paginatedRecords = $baseQuery()
+            ->with(['father:id,pig_code,breed', 'mother:id,pig_code,breed'])
             ->latest()
-            ->paginate(10); 
+            ->paginate(10)
+            ->withQueryString();
 
         return Inertia::render('Records/Index', [
-            'records' => $paginatedRecords, 
-            'sires'   => $dropdownSires,          
-            'dams'    => $dropdownDams,            
-            'stats'   => $stats,
+            'records' => $paginatedRecords,
+            'sires' => $dropdownSires,
+            'dams' => $dropdownDams,
+            'stats' => $stats,
             'isAdmin' => (bool) $user->is_admin,
-            'flash'   => ['message' => session('flash_message') ?? session('message')]
+            'flash' => ['message' => session('flash_message') ?? session('message')],
         ]);
     }
 
-    public function store(Request $request)
+    public function store(RecordRequest $request)
     {
-        // Validation thabiti ili kuzuia makosa ya SQLite
-        $request->validate([
-            'record_type' => 'required|string',
-            'pig_code'    => 'required|string',
-            'birth_date'  => 'required|date',
-        ]);
+        Record::create($this->buildAttributes($request));
 
-        // SAKATA LA BREED KIOTOMATIKI:
-        // Kama ni litter na mtumiaji hajaweka breed, tunatafuta breed ya MAMA yake na kuwapa watoto.
-        $breed = $request->breed;
-        if ($request->record_type === 'litter' && !$breed && $request->dam_code) {
-            $mother = Record::where('pig_code', $request->dam_code)->first();
-            if ($mother) {
-                $breed = $mother->breed;
-            }
-        }
+        $label = $request->record_type === 'litter' ? 'Kundi' : 'Nguruwe';
 
-        Record::create([
-            'record_type'  => $request->record_type,
-            'pig_code'     => $request->pig_code,
-            'title'        => $request->title ?? ($request->record_type === 'litter' ? 'Kundi ' . $request->pig_code : 'Hana Jina'),
-            'gender'       => $request->record_type === 'litter' ? 'Dume/Jike' : $request->gender, 
-            'breed'        => $breed ?? 'Mchanganyiko', // Kama hakuna kabisa, mfumo unaweka Mchanganyiko
-            'birth_date'   => $request->birth_date,
-            'pen_number'   => $request->pen_number ?? 'Banda la Uzazi',
-            'status'       => $request->status ?? ($request->record_type === 'litter' ? 'Mtoto' : 'Mkubwa'),
-            'litter_size'  => $request->litter_size ?? 1, // Default iwe mtoto 1 kama haikujazwa
-            'weaning_date' => $request->weaning_date,
-            'sire_code'    => $request->sire_code,
-            'dam_code'     => $request->dam_code,
-            'user_id'      => Auth::id(),
-        ]);
-
-        return redirect()->back()->with('message', 'Rekodi ya kundi imehifadhiwa na kuingizwa kwenye summary!');
+        return redirect()->back()->with('flash_message', "Rekodi ya {$label} imehifadhiwa kikamilifu!");
     }
 
-    public function destroy($id)
+    public function update(RecordRequest $request, Record $record)
     {
-        $user = Auth::user();
+        $this->authorize('update', $record);
 
-        $record = $user->is_admin 
-            ? Record::findOrFail($id) 
-            : Record::where('user_id', $user->id)->findOrFail($id);
+        $record->update($this->buildAttributes($request));
+
+        return redirect()->back()->with('flash_message', 'Rekodi imesasishwa kwa mafanikio!');
+    }
+
+    public function destroy(Record $record)
+    {
+        $this->authorize('delete', $record);
 
         $record->delete();
 
@@ -114,28 +94,59 @@ class RecordController extends Controller
 
     public function updateWeight(Request $request, Record $record)
     {
-        $user = Auth::user();
+        $this->authorize('update', $record);
 
-        if (!$user->is_admin && $record->user_id !== $user->id) {
-            abort(403, 'Huna ruhusa ya kubadilisha rekodi hii.');
-        }
+        $validated = $request->validate([
+            'new_weight' => ['required', 'numeric', 'min:1', 'max:1000'],
+        ]);
 
-        $request->validate(['new_weight' => 'required|integer|min:1']);
-        
-        $history = is_array($record->weight_history) 
-            ? $record->weight_history 
-            : (json_decode($record->weight_history, true) ?? []);
-            
+        $history = is_array($record->weight_history) ? $record->weight_history : [];
+
         $history[] = [
-            'date'   => date('Y-m-d'), 
-            'weight' => (int) $request->new_weight
+            'date' => now()->toDateString(),
+            'weight' => (float) $validated['new_weight'],
         ];
-        
+
         $record->update([
-            'value'          => $request->new_weight,
-            'weight_history' => $history 
+            'value' => $validated['new_weight'],
+            'weight_history' => $history,
         ]);
 
         return redirect()->back()->with('flash_message', 'Uzito mpya umesajiliwa vyema!');
+    }
+
+    /**
+     * Andaa data iliyosafishwa kwa ajili ya kuhifadhi/kusasisha rekodi.
+     * Hapa ndipo tunapoweka thamani chaguo-msingi (defaults) na kutafuta breed ya mzazi.
+     */
+    private function buildAttributes(RecordRequest $request): array
+    {
+        $data = $request->validated();
+        $isLitter = $data['record_type'] === 'litter';
+
+        // Breed kiotomatiki: kama ni kundi na breed haijawekwa, tumia breed ya mama
+        $breed = $data['breed'] ?? null;
+        if ($isLitter && ! $breed && ! empty($data['dam_code'])) {
+            $mother = Record::where('pig_code', $data['dam_code'])->first();
+            $breed = $mother?->breed;
+        }
+
+        return [
+            'record_type' => $data['record_type'],
+            'pig_code' => $data['pig_code'],
+            'title' => $data['title'] ?? ($isLitter ? 'Kundi '.$data['pig_code'] : 'Hana Jina'),
+            'gender' => $isLitter ? ($data['gender'] ?? 'Changanyiko') : ($data['gender'] ?? 'Jike'),
+            'breed' => $breed ?? 'Mchanganyiko',
+            'castration_status' => $data['castration_status'] ?? null,
+            'birth_date' => $data['birth_date'],
+            'age_manual' => $data['age_manual'] ?? null,
+            'weaning_date' => $data['weaning_date'] ?? null,
+            'pen_number' => $data['pen_number'] ?? ($isLitter ? 'Banda la Uzazi' : 'Banda A'),
+            'status' => $data['status'] ?? ($isLitter ? 'Mtoto' : 'Anakuwa'),
+            'litter_size' => $isLitter ? ($data['litter_size'] ?? 1) : null,
+            'sire_code' => $data['sire_code'] ?? null,
+            'dam_code' => $data['dam_code'] ?? null,
+            'user_id' => Auth::id(),
+        ];
     }
 }
